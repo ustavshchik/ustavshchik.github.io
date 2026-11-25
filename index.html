@@ -317,6 +317,7 @@
         outline: 0
       }
     }
+  sup.ordinal { font-family: inherit; font-size: 0.7em; line-height: 0; vertical-align: super; }
   </style>
 </head>
 
@@ -358,11 +359,11 @@
           <div class="heading"><span class="note">After Great Litany (No Kathisma):</span>
             <h2>Lord, I Call</h2>
           </div>
-          <div>In the 5ᵗʰ Tone, Lord, I call upon Thee; Hear me!</div>
+          <div>In the 5th Tone, Lord, I call upon Thee; Hear me!</div>
           <div class="cue">…</div>
           <div class="rubric">Read through Verse (6)</div>
           <div class="cue">…</div>
-          <div><span class="rubric">On (3):</span> <span>In the 4ᵗʰ Tone…</span></div>
+          <div><span class="rubric">On (3):</span> <span>In the 4th Tone…</span></div>
           <div class="cue">…</div>
           <div class="ending rows"></div>
           <div class="ornaments"></div>
@@ -420,7 +421,7 @@
         group.hidden = mode === 'combined';
         const cue = aposticha ? 'Sticheron' : '…';
         if (mode === 'separate') {
-          group.append(field('Glory in the ' + (aposticha ? '2ⁿᵈ' : '1ˢᵗ') + ' Tone, Glory to the Father…'), field(cue, 'cue'),
+          group.append(field('Glory in the ' + (aposticha ? '2nd' : '1st') + ' Tone, Glory to the Father…'), field(cue, 'cue'),
             field('Now and ever, the Stavrotheotokion in the same tone, Now and ever…'));
         } else { group.append(field('Glory, Now and ever...')); }
         group.append(field(aposticha ? 'Sticheron; then “Lord, now lettest…”' : '…', 'cue'));
@@ -449,28 +450,88 @@
         sheet.append(...days.map(buildPanel)); $('#sheets').append(sheet);
       }
     }
-    const ordinalEndings = { st: 'ˢᵗ', nd: 'ⁿᵈ', rd: 'ʳᵈ', th: 'ᵗʰ' };
-    function raiseOrdinals(value) {
-      return value.replace(/(\d+)(st|nd|rd|th)\b/gi,
-        (_, digits, ending) => digits + ordinalEndings[ending.toLowerCase()]);
-    }
+    const legacySuffixes = { 'ˢᵗ': 'st', 'ⁿᵈ': 'nd', 'ʳᵈ': 'rd', 'ᵗʰ': 'th' };
+
     function formatOrdinals(field) {
-      const selection = window.getSelection();
-      const restore = selection.rangeCount && field.contains(selection.anchorNode) &&
-        field.contains(selection.focusNode);
-      const { anchorNode, anchorOffset, focusNode, focusOffset } = selection;
-      const walker = document.createTreeWalker(field, NodeFilter.SHOW_TEXT);
-      let changed = false;
-      while (walker.nextNode()) {
-        const node = walker.currentNode;
-        const formatted = raiseOrdinals(node.data);
-        if (formatted !== node.data) {
-          node.data = formatted;
-          changed = true;
+      // Match across inline formatting, but never across a paragraph or line break.
+      const nodes = [];
+      let text = '';
+      function collect(parent) {
+        for (const child of parent.childNodes) {
+          if (child.nodeType === Node.TEXT_NODE) {
+            nodes.push({ node: child, start: text.length, spans: [] });
+            text += child.data;
+          } else if (child.nodeType === Node.ELEMENT_NODE) {
+            const boundary = /^(BR|DIV|P|LI)$/.test(child.tagName);
+            if (boundary) text += '\n';
+            collect(child);
+            if (boundary) text += '\n';
+          }
         }
       }
-      // Each raised suffix has the same UTF-16 length as its typed counterpart.
-      if (changed && restore) selection.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset);
+      collect(field);
+      for (const match of text.matchAll(/\d+(st|nd|rd|th|ˢᵗ|ⁿᵈ|ʳᵈ|ᵗʰ)(?!\w)/gi)) {
+        const suffix = match[1];
+        const end = match.index + match[0].length;
+        const start = end - suffix.length;
+        const letters = legacySuffixes[suffix] || suffix;
+        for (const entry of nodes) {
+          const left = Math.max(start, entry.start);
+          const right = Math.min(end, entry.start + entry.node.length);
+          if (left < right) entry.spans.push({
+            start: left - entry.start, end: right - entry.start,
+            letters: letters.slice(left - start, right - start)
+          });
+        }
+      }
+
+      function needsUpdate(entry) {
+        const { node, spans } = entry;
+        if (!node.parentElement.closest('sup.ordinal')) return spans.length > 0;
+        return spans.length !== 1 || spans[0].start !== 0 ||
+          spans[0].end !== node.length || node.data !== spans[0].letters;
+      }
+      if (!nodes.some(needsUpdate)) return;
+
+      const selection = window.getSelection();
+      function bookmark(node, offset) {
+        if (!field.contains(node)) return null;
+        const range = document.createRange();
+        range.selectNodeContents(field);
+        range.setEnd(node, offset);
+        return range.toString().length;
+      }
+      const anchor = bookmark(selection.anchorNode, selection.anchorOffset);
+      const focus = bookmark(selection.focusNode, selection.focusOffset);
+
+      for (const sup of field.querySelectorAll('sup.ordinal')) sup.replaceWith(...sup.childNodes);
+      for (const {node, spans} of nodes) {
+        // Work from right to left so earlier offsets still refer to the original text.
+        for (const span of spans.reverse()) {
+          if (span.end < node.length) node.splitText(span.end);
+          const suffix = span.start ? node.splitText(span.start) : node;
+          const sup = document.createElement('sup');
+          sup.className = 'ordinal';
+          sup.textContent = span.letters;
+          suffix.replaceWith(sup);
+        }
+      }
+      function position(offset) {
+        const walker = document.createTreeWalker(field, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          const node = walker.currentNode;
+          if (offset <= node.length) {
+            const sup = node.parentElement.closest('sup.ordinal');
+            if (sup && offset === node.length) {
+              return [sup.parentNode, Array.prototype.indexOf.call(sup.parentNode.childNodes, sup) + 1];
+            }
+            return [node, offset];
+          }
+          offset -= node.length;
+        }
+        return [field, field.childNodes.length];
+      }
+      if (anchor !== null && focus !== null) selection.setBaseAndExtent(...position(anchor), ...position(focus));
     }
     all('#sheets [contenteditable]').forEach(formatOrdinals);
     const panels = all('.panel');
